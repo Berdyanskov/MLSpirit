@@ -1,0 +1,79 @@
+# 编译输出
+/build/
+/bin/
+/lib/
+/out/
+/cmake-build-*/
+*.exe
+*.out
+*.app
+
+# CUDA编译产物
+*.ptx
+*.cubin
+*.fatbin
+*.gpu
+*.ll
+
+# C++编译产物
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python（如果有Python绑定）
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+# 数据文件（通常很大，不应上传）
+*.bin
+*.dat
+*.raw
+*.npy
+*.npz
+*.pkl
+*.h5
+*.hdf5
+datasets/
+data/
+
+# 模型权重
+*.pth
+*.onnx
+*.trt
+*.engine
+*.plan
+models/
+
+# 日志和临时文件
+*.log
+logs/
+tmp/
+temp/
+.cache/
+
+# 但保留关键示例数据（使用!取反）
+!test/data/.gitkeep
+!examples/sample_input.txt
