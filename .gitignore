@@ -77,3 +77,5 @@ temp/
 # 但保留关键示例数据（使用!取反）
 !test/data/.gitkeep
 !examples/sample_input.txt
+
+plan.md
