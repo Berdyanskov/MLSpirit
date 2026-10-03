@@ -30,6 +30,18 @@ check_matmul((5,), (5,))                  # 1D@1D -> 标量
 check_matmul((5,), (5, 7))                # 1D@2D
 check_matmul((6, 5), (5,))                # 2D@1D
 
+# 转置视图：t.transpose() 零拷贝，matmul 直接消费非连续输入
+_rng_tv = np.random.default_rng(11)
+a_np = _rng_tv.standard_normal((2, 3)).astype(np.float32)
+b_np = _rng_tv.standard_normal((2, 5)).astype(np.float32)
+a = mp.from_numpy(a_np)
+assert a.transpose().is_contiguous is False
+assert a.transpose().transpose().is_contiguous is True
+got = mp.matmul(a.transpose(), mp.from_numpy(b_np))
+ok = got.shape == (3, 5) and np.allclose(got.numpy(), a_np.T @ b_np, rtol=1e-4, atol=1e-5)
+print(f"transposed-view matmul {'PASS' if ok else 'FAIL'}")
+fails += 0 if ok else 1
+
 # 元数据
 t = mp.from_numpy(np.arange(24, dtype=np.float32).reshape(2, 3, 4))
 assert t.shape == (2, 3, 4) and t.strides == (12, 4, 1) and t.numel == 24

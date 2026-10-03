@@ -15,11 +15,12 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(CUDAToolkit REQUIRED)
 
-# 核心库：Tensor 抽象 + CUDA kernel
+# 核心库：Tensor 抽象 + 存储底座 + CUDA kernel
 add_library(microtensor STATIC
     src/Tensor.cpp
-    src/cuda_add.cu
-    src/cuda_matmul.cu
+    src/StorageImpl.cpp
+    src/add.cu
+    src/matmul.cu
 )
 target_include_directories(microtensor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(microtensor PUBLIC CUDA::cudart)

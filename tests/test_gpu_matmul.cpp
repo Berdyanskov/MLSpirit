@@ -146,6 +146,44 @@ int main() {
     printf("hand-check identity batches  %s\n", ok ? "PASS" : "FAIL");
     fails += ok ? 0 : 1;
 
+    // ---- 转置视图进入 CUDA 路径（入口处逐元素 D2D 物化）----
+    // 2D: [4,3](=A^T) @ [3,5]
+    {
+        Tensor ta({3, 4}, DataType::FP32, DeviceType::CPU);
+        Tensor tb({3, 5}, DataType::FP32, DeviceType::CPU);
+        std::vector<float> av(12), bv(15);
+        fill(av, 21); fill(bv, 22);
+        ta.copy_from(av.data()); tb.copy_from(bv.data());
+        auto cref = Tensor::matmul(ta.transpose(), tb);   // CPU strides 路径(已验证)
+
+        ta.to_device(DeviceType::CUDA); tb.to_device(DeviceType::CUDA);
+        auto cg = Tensor::matmul(ta.transpose(), tb);     // 视图 -> 物化 -> kernel
+        std::vector<float> gv(20), rv(20);
+        cg->copy_to(gv.data()); cref->copy_to(rv.data());
+        float e = max_diff(gv, rv);
+        bool vok = e < 1e-4f;
+        printf("2D transposed-view matmul  err=%.3e  %s\n", e, vok ? "PASS" : "FAIL");
+        fails += vok ? 0 : 1;
+    }
+    // batched: [2,4,3](=A^T) @ [2,3,5]
+    {
+        Tensor ta({2, 3, 4}, DataType::FP32, DeviceType::CPU);
+        Tensor tb({2, 3, 5}, DataType::FP32, DeviceType::CPU);
+        std::vector<float> av(24), bv(30);
+        fill(av, 31); fill(bv, 32);
+        ta.copy_from(av.data()); tb.copy_from(bv.data());
+        auto cref = Tensor::matmul(ta.transpose(), tb);
+
+        ta.to_device(DeviceType::CUDA); tb.to_device(DeviceType::CUDA);
+        auto cg = Tensor::matmul(ta.transpose(), tb);
+        std::vector<float> gv(40), rv(40);
+        cg->copy_to(gv.data()); cref->copy_to(rv.data());
+        float e = max_diff(gv, rv);
+        bool vok = e < 1e-4f;
+        printf("batched transposed-view matmul  err=%.3e  %s\n", e, vok ? "PASS" : "FAIL");
+        fails += vok ? 0 : 1;
+    }
+
     printf(fails ? "RESULT: FAIL (%d errors)\n" : "RESULT: ALL PASS\n", fails);
     return fails ? 1 : 0;
 }

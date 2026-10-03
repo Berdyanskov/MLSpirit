@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "Types.hpp"
+
 namespace mlspirit {
 
 class StorageImpl {

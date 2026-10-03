@@ -7,126 +7,69 @@
 
 namespace mlspirit {
 
-void Tensor::allocate_memory() {
-    if (device_ == DeviceType::CUDA) {
-        // 设备端直接构造的 Tensor（如 mm 的输出）必须分配显存；
-        // 一度只有 new[]，host 指针被 CUDA kernel 当设备指针写入 => 非法内存访问
-        cudaError_t err = cudaMalloc(&data_ptr_, size_bytes());
-        if (err != cudaSuccess)
-            throw std::runtime_error(std::string("Tensor: cudaMalloc failed: ") + cudaGetErrorString(err));
-        return;
-    }
-    switch (dtype_) {
-    case DataType::FP32:
-        data_ptr_ = new float[numel_];
-        break;
-    case DataType::FP16:
-        data_ptr_ = new uint16_t[numel_];
-        break;
-    case DataType::INT8:
-        data_ptr_ = new int8_t[numel_];
-        break;
-    default:
-        data_ptr_ = new float[numel_];
-        break;
-    }
-}
-
-void Tensor::free_memory() {
-    if (data_ptr_ == nullptr) return;
-    if (device_ == DeviceType::CUDA) {
-        // 设备内存必须走 cudaFree；对它 delete[] 会直接段错误
-        cudaFree(data_ptr_);
-    } else {
-        switch (dtype_) {
-        case DataType::FP32:
-            delete[] static_cast<float*>(data_ptr_);
-            break;
-        case DataType::FP16:
-            delete[] static_cast<uint16_t*>(data_ptr_);
-            break;
-        case DataType::INT8:
-            delete[] static_cast<int8_t*>(data_ptr_);
-            break;
-        default:
-            delete[] static_cast<float*>(data_ptr_);
-            break;
-        }
-    }
-    data_ptr_ = nullptr;
-}
-
 Tensor::Tensor(const std::vector<int>& shape, DataType dtype, DeviceType device)
     : shape_(shape), device_(device), dtype_(dtype) {
     numel_ = 1;
     for (int d : shape_) numel_ *= d;
     strides_ = std::vector<int>(shape_.size());
-    if (strides_.size()){
+    if (!strides_.empty()) {
         strides_.back() = 1;
-        for (int i = static_cast<int>(strides_.size()) - 2; i >= 0; --i){
+        for (int i = static_cast<int>(strides_.size()) - 2; i >= 0; --i)
             strides_[i] = strides_[i + 1] * shape_[i + 1];
-        }
     }
-    data_ptr_ = nullptr;
-    allocate_memory();
+    // 分配策略全部收拢进 StorageImpl；Tensor 层再也见不到 cudaMalloc / delete
+    storage_ = std::make_shared<StorageImpl>(size_bytes(), device_);
 }
 
-Tensor::~Tensor() {
-    free_memory();
-}
-
-Tensor::Tensor(Tensor&& other) noexcept: shape_(std::move(other.shape_)), strides_(std::move(other.strides_)), numel_(other.numel_), device_(other.device_),
-    dtype_(other.dtype_), data_ptr_(other.data_ptr_) {
-    other.data_ptr_ = nullptr;
+Tensor::Tensor(Tensor&& other) noexcept
+    : shape_(std::move(other.shape_)), strides_(std::move(other.strides_)),
+      numel_(other.numel_), device_(other.device_), dtype_(other.dtype_),
+      storage_(std::move(other.storage_)), offset_(other.offset_) {
     other.numel_ = 0;
-    other.strides_.clear();
+    other.offset_ = 0;
     other.shape_.clear();
+    other.strides_.clear();
 }
 
 void Tensor::to_device(DeviceType target_device) {
     if (device_ == target_device) return;
-    if (target_device == DeviceType::CUDA) {
-        void* host_ptr = data_ptr_;
-        data_ptr_ = nullptr;
-        cudaMalloc(&data_ptr_, size_bytes());
-        cudaMemcpy(data_ptr_, host_ptr, size_bytes(), cudaMemcpyHostToDevice);
-        // delete[] 必须按元素类型释放，void* 无法正确析构，需按 dtype_ 转换后释放
-        switch (dtype_) {
-        case DataType::FP32: delete[] static_cast<float*>(host_ptr); break;
-        case DataType::FP16: delete[] static_cast<uint16_t*>(host_ptr); break;
-        case DataType::INT8: delete[] static_cast<int8_t*>(host_ptr); break;
-        default: delete[] static_cast<float*>(host_ptr); break;
-        }
-    } else {
-        void* dev_ptr = data_ptr_;
-        data_ptr_ = nullptr;
-        // 与 allocate_memory() 一致，用 new[] 分配，以便 free_memory() 正确 delete[]
-        switch (dtype_) {
-        case DataType::FP32: data_ptr_ = new float[numel_]; break;
-        case DataType::FP16: data_ptr_ = new uint16_t[numel_]; break;
-        case DataType::INT8: data_ptr_ = new int8_t[numel_]; break;
-        default: data_ptr_ = new float[numel_]; break;
-        }
-        cudaMemcpy(data_ptr_, dev_ptr, size_bytes(), cudaMemcpyDeviceToHost);
-        cudaFree(dev_ptr);
-    }
+    // 迁移只发生在"实体"上：非连续视图先物化，再做平板跨端拷贝。
+    // *this 重指向新 storage，共享旧存储的其他视图不受影响（shared_ptr 为旧块续命）
+    if (!is_contiguous())
+        *this = contiguous();
+    auto new_storage = std::make_shared<StorageImpl>(size_bytes(), target_device);
+    cudaMemcpyKind kind = (target_device == DeviceType::CUDA)
+                              ? cudaMemcpyHostToDevice
+                              : cudaMemcpyDeviceToHost;
+    cudaError_t err = cudaMemcpy(new_storage->data(), data(), size_bytes(), kind);
+    if (err != cudaSuccess)
+        throw std::runtime_error(std::string("Tensor::to_device: ") + cudaGetErrorString(err));
+    storage_ = std::move(new_storage);
     device_ = target_device;
 }
 
 void Tensor::copy_from(const void* host_ptr) {
     if (host_ptr == nullptr) return;
+    // 向非连续视图平板写入会把数据写错位置；散写由未来的 copy kernel 负责
+    if (!is_contiguous())
+        throw std::runtime_error("copy_from: writing into a non-contiguous view is not supported; call contiguous() first");
     if (device_ == DeviceType::CUDA)
-        cudaMemcpy(data_ptr_, host_ptr, size_bytes(), cudaMemcpyHostToDevice);
+        cudaMemcpy(data(), host_ptr, size_bytes(), cudaMemcpyHostToDevice);
     else
-        std::memcpy(data_ptr_, host_ptr, size_bytes());
+        std::memcpy(data(), host_ptr, size_bytes());
 }
 
 void Tensor::copy_to(void* host_ptr) const {
     if (host_ptr == nullptr) return;
+    // 视图也能读：先物化（contiguous 对连续张量是零成本浅拷贝）再平板拷出
+    if (!is_contiguous()) {
+        contiguous().copy_to(host_ptr);
+        return;
+    }
     if (device_ == DeviceType::CUDA)
-        cudaMemcpy(host_ptr, data_ptr_, size_bytes(), cudaMemcpyDeviceToHost);
+        cudaMemcpy(host_ptr, data(), size_bytes(), cudaMemcpyDeviceToHost);
     else
-        std::memcpy(host_ptr, data_ptr_, size_bytes());
+        std::memcpy(host_ptr, data(), size_bytes());
 }
 
 void Tensor::reshape_in_place(const std::vector<int>& new_shape) {
@@ -134,6 +77,8 @@ void Tensor::reshape_in_place(const std::vector<int>& new_shape) {
     for (int d : new_shape) new_numel *= d;
     if (new_numel != numel_)
         throw std::runtime_error("reshape_in_place: element count mismatch");
+    if (!is_contiguous())
+        throw std::runtime_error("reshape_in_place: tensor is not contiguous; call contiguous() first");
     shape_ = new_shape;
     // 与构造函数相同的行主序 strides 推导（连续张量前提）
     strides_.assign(new_shape.size(), 0);
@@ -142,6 +87,71 @@ void Tensor::reshape_in_place(const std::vector<int>& new_shape) {
         for (int i = static_cast<int>(strides_.size()) - 2; i >= 0; --i)
             strides_[i] = strides_[i + 1] * shape_[i + 1];
     }
+}
+
+// ---------------- 视图（view）----------------
+// 视图 = 共享 Storage + 自己的 shape/strides/offset。
+// 关键认知：transpose 不碰任何数据，只交换两条元数据；读元素时按
+//   地址 = base + offset + Σ idx[d] * strides[d]
+// 换算，所以"转置后的读取"自然成立。
+
+Tensor::Tensor(std::shared_ptr<StorageImpl> storage, std::vector<int> shape,
+               std::vector<int> strides, size_t offset, DataType dtype, DeviceType device)
+    : shape_(std::move(shape)), strides_(std::move(strides)), device_(device),
+      dtype_(dtype), storage_(std::move(storage)), offset_(offset) {
+    numel_ = 1;
+    for (int d : shape_) numel_ *= d;
+}
+
+bool Tensor::is_contiguous() const {
+    // 从最后一维向前验证行主序布局；shape 为 1 的维豁免（其 stride 不影响布局）
+    size_t expected = 1;
+    for (int i = static_cast<int>(shape_.size()) - 1; i >= 0; --i) {
+        if (shape_[i] == 1) continue;
+        if (strides_[i] != static_cast<int>(expected)) return false;
+        expected *= static_cast<size_t>(shape_[i]);
+    }
+    return true;
+}
+
+Tensor Tensor::transpose(int dim0, int dim1) const {
+    const int ndim = static_cast<int>(shape_.size());
+    if (dim0 < 0) dim0 += ndim;
+    if (dim1 < 0) dim1 += ndim;
+    if (dim0 < 0 || dim0 >= ndim || dim1 < 0 || dim1 >= ndim)
+        throw std::runtime_error("transpose: dim out of range");
+    auto new_shape = shape_;
+    auto new_strides = strides_;
+    std::swap(new_shape[dim0], new_shape[dim1]);
+    std::swap(new_strides[dim0], new_strides[dim1]);
+    return Tensor(storage_, std::move(new_shape), std::move(new_strides),
+                  offset_, dtype_, device_);
+}
+
+Tensor Tensor::contiguous() const {
+    if (is_contiguous()) return *this;   // 已连续：浅拷贝即"自身"，零成本
+    // 唯一会真正搬数据的地方：按 strides 逐元素寻址，物化为连续张量。
+    // 正确性优先版：CUDA 上逐元素 D2D memcpy（生产框架用 elementwise copy kernel）
+    Tensor out(shape_, dtype_, device_);
+    if (numel_ == 0) return out; // 空张量无元素可搬（也避免后续对 0 维取模）
+    const bool cuda = (device_ == DeviceType::CUDA);
+    const size_t es = element_size();
+    const char* src = static_cast<const char*>(data());
+    char* dst = static_cast<char*>(out.data());
+    for (size_t idx = 0; idx < numel_; ++idx) {
+        // 扁平下标 -> 多维坐标 -> 按 strides 换算源偏移（视图读取的唯一入口）
+        size_t off = 0, t = idx;
+        for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+            const size_t dim = static_cast<size_t>(shape_[d]);
+            off += (t % dim) * static_cast<size_t>(strides_[d]);
+            t /= dim;
+        }
+        if (cuda)
+            cudaMemcpy(dst + idx * es, src + off * es, es, cudaMemcpyDeviceToDevice);
+        else
+            std::memcpy(dst + idx * es, src + off * es, es);
+    }
+    return out;
 }
 
 std::unique_ptr<Tensor> Tensor::mm(const Tensor& a, const Tensor& b) {
@@ -157,8 +167,11 @@ std::unique_ptr<Tensor> Tensor::mm(const Tensor& a, const Tensor& b) {
     if (a.device() == DeviceType::CUDA) {
         if (b.device() != DeviceType::CUDA)
             throw std::runtime_error("mm: device mismatch (a on CUDA, b on CPU)");
-        // CUDA kernel 假定行主序连续内存（当前所有 Tensor 均为连续；
-        // 将来支持非连续视图时需在入口处先 contiguous()）
+        // kernel 只认行主序连续内存：非连续视图在入口处统一物化
+        if (!a.is_contiguous() || !b.is_contiguous()) {
+            Tensor a2 = a.contiguous(), b2 = b.contiguous();
+            return mm(a2, b2);   // 最多递归一层
+        }
         auto out = std::make_unique<Tensor>(std::vector<int>{M, N}, DataType::FP32, DeviceType::CUDA);
         launch_mm_kernel(static_cast<const float*>(a.data()),
                          static_cast<const float*>(b.data()),
@@ -234,6 +247,11 @@ std::unique_ptr<Tensor> Tensor::matmul(const Tensor& a, const Tensor& b) {
         throw std::runtime_error("matmul: only FP32 supported in this stub");
     if (a.device() != b.device())
         throw std::runtime_error("matmul: device mismatch");
+    // CUDA 路径只认连续张量：非连续视图在此统一物化（最多递归一层）
+    if (a.device() == DeviceType::CUDA && (!a.is_contiguous() || !b.is_contiguous())) {
+        Tensor a2 = a.contiguous(), b2 = b.contiguous();
+        return matmul(a2, b2);
+    }
 
     const std::vector<int>& sa = a.shape();
     const std::vector<int>& sb = b.shape();
@@ -388,28 +406,31 @@ void Tensor::add_(const Tensor& other) {
         throw std::runtime_error("add_: shape mismatch");
     if (dtype_ != other.dtype_)
         throw std::runtime_error("add_: dtype mismatch");
+    // 平板循环只适用于连续张量；视图的逐元素散写由后续的广播算子核负责
+    if (!is_contiguous() || !other.is_contiguous())
+        throw std::runtime_error("add_: non-contiguous tensors not supported yet; call contiguous() first");
 
     if (device_ == DeviceType::CUDA) {
-        launch_add_kernel(data_ptr_, const_cast<void*>(other.data()), data_ptr_, numel_, dtype_);
+        launch_add_kernel(data(), const_cast<void*>(other.data()), data(), numel_, dtype_);
         return;
     }
 
     switch (dtype_) {
     case DataType::FP32: {
-        float* p = static_cast<float*>(data_ptr_);
-        const float* q = static_cast<const float*>(other.data_ptr_);
+        float* p = static_cast<float*>(data());
+        const float* q = static_cast<const float*>(other.data());
         for (size_t i = 0; i < numel_; ++i) p[i] += q[i];
         break;
     }
     case DataType::FP16: {
-        uint16_t* p = static_cast<uint16_t*>(data_ptr_);
-        const uint16_t* q = static_cast<const uint16_t*>(other.data_ptr_);
+        uint16_t* p = static_cast<uint16_t*>(data());
+        const uint16_t* q = static_cast<const uint16_t*>(other.data());
         for (size_t i = 0; i < numel_; ++i) p[i] = static_cast<uint16_t>(p[i] + q[i]); // 简化：未做半精度舍入
         break;
     }
     case DataType::INT8: {
-        int8_t* p = static_cast<int8_t*>(data_ptr_);
-        const int8_t* q = static_cast<const int8_t*>(other.data_ptr_);
+        int8_t* p = static_cast<int8_t*>(data());
+        const int8_t* q = static_cast<const int8_t*>(other.data());
         for (size_t i = 0; i < numel_; ++i) p[i] = static_cast<int8_t>(p[i] + q[i]);
         break;
     }

@@ -104,6 +104,11 @@ PYBIND11_MODULE(mlspirit, m) {
             return out;
         })
 
+        // 视图操作：transpose 零拷贝（返回共享存储的视图）
+        .def("transpose", &Tensor::transpose, py::arg("dim0") = -2, py::arg("dim1") = -1)
+        .def("contiguous", &Tensor::contiguous)
+        .def_property_readonly("is_contiguous", &Tensor::is_contiguous)
+
         .def("add_", &Tensor::add_, py::arg("other"));
 
     // numpy -> Tensor

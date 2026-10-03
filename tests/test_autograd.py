@@ -73,5 +73,17 @@ x = ag.variable(x_np)
 ag.sum_all(ag.add(ag.square(x), ag.exp(x))).backward()
 report("multi-branch accum", close(x.grad, 2 * x_np + np.exp(x_np)))
 
+# 6) batched matmul 反向：transpose 视图打通 batch 维转置
+#    Y[b] = X[b] @ W[b]; sum(Y) 的梯度：gX = ones @ W^T, gW = X^T @ ones
+x3_np = rng.standard_normal((2, 3, 4)).astype(np.float32)
+w3_np = rng.standard_normal((2, 4, 5)).astype(np.float32)
+x, w = ag.variable(x3_np), ag.variable(w3_np)
+ag.sum_all(ag.matmul(x, w)).backward()
+ones3 = np.ones((2, 3, 5), dtype=np.float32)
+ref_gx = np.matmul(ones3, w3_np.transpose(0, 2, 1))
+ref_gw = np.matmul(x3_np.transpose(0, 2, 1), ones3)
+report("batched matmul grad X", close(x.grad, ref_gx))
+report("batched matmul grad W", close(w.grad, ref_gw))
+
 print("ALL PASS" if fails == 0 else f"{fails} FAILURES")
 raise SystemExit(0 if fails == 0 else 1)

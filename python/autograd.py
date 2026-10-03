@@ -31,8 +31,10 @@ def _clone(t):
 
 
 def _transpose(t):
-    """2D 转置（拷贝版）。待办：C++ 实现 transpose view（零拷贝）后替换。"""
-    return _wrap(t.numpy().T, t.device)
+    """交换最后两维 —— C++ 零拷贝 transpose 视图（共享存储，不搬数据）。"""
+    if len(t.shape) < 2:
+        raise ValueError("transpose requires ndim >= 2")
+    return t.transpose(len(t.shape) - 2, len(t.shape) - 1)
 
 
 def _add(a, b):
@@ -104,12 +106,12 @@ class Function:
 
 class MatMul(Function):
     """Y = A @ B => dA = GY @ B^T, dB = A^T @ GY。
-    前向/反向全部由 C++ matmul 完成（含 CUDA 分派），是这里最"纯正"的算子。
-    限制：反向目前只覆盖 2D×2D（批次反向需要 batch 维转置，随 transpose 落地放开）。"""
+    前向/反向全部由 C++ matmul 完成（含 CUDA 分派），B^T 走零拷贝 transpose 视图，
+    2D 与 batched 通吃。
+    遗留限制：若前向时 A/B 之间存在 batch 广播，反向还需沿广播维 reduce
+    （sum_to，属路线图任务三）；等 batch 或同形状下梯度完全正确。"""
 
     def forward(self, a, b):
-        if len(a.shape) != 2 or len(b.shape) != 2:
-            raise NotImplementedError("autograd.MatMul 暂仅支持 2D（待 transpose view）")
         self.a, self.b = a, b
         return mp.matmul(a, b)
 
