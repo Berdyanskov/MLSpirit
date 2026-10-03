@@ -1,9 +1,7 @@
 # MicroTensor (MLSpirit)
 
 A machine learning library built from scratch for teaching purposes. The main line is
-**implementing the tensor system and CUDA operators by hand**, walking through every
-detail behind "one block of storage + a handful of metadata": strides, broadcasting,
-dual-device (CPU/CUDA) memory management, tiled GEMM, batched matmul, and autodiff.
+ walking through every detail behind "one block of storage + a handful of metadata": strides, broadcasting, dual-device (CPU/CUDA) memory management, tiled GEMM, batched matmul, and autodiff.
 
 ## Project layout
 
