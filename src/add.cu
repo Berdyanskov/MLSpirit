@@ -3,6 +3,8 @@
 #include "kernel.h"
 #include "Tensor.hpp"
 
+namespace mlspirit {
+
 // 使用模板核函数，一种实现覆盖 FP32/FP16/INT8，无需为每种类型手写一份
 template<typename T>
 __global__ void add_kernel(const T* a, const T* b, T* c, int n) {
@@ -37,3 +39,5 @@ void launch_add_kernel(void* a, void* b, void* c, size_t n, DataType dtype) {
         break;
     }
 }
+
+} // namespace mlspirit

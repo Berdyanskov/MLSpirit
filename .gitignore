@@ -79,3 +79,7 @@ temp/
 !examples/sample_input.txt
 
 plan.md
+
+# 崩溃转储
+core
+core.*

@@ -1,8 +1,11 @@
+#pragma once
 #include <vector>
 #include <memory>
 #include <string>
 #include <cstddef>
 #include <cstdint>
+
+namespace mlspirit {
 
 enum class DeviceType { CPU, CUDA };
 enum class DataType { FP32, FP16, INT8 };
@@ -20,6 +23,7 @@ inline size_t dtype_element_size(DataType dtype) {
 class Tensor {
 private:
     std::vector<int> shape_;
+    std::vector<int> strides_;
     size_t numel_;
     DeviceType device_;
     DataType dtype_;
@@ -41,6 +45,7 @@ public:
 
     // 核心元数据
     const std::vector<int>& shape() const { return shape_; }
+    const std::vector<int>& strides() const { return strides_; } // 单位：元素个数，非字节
     size_t numel() const { return numel_; }
     DeviceType device() const { return device_; }
     DataType dtype() const { return dtype_; }
@@ -54,7 +59,12 @@ public:
     void copy_from(const void* host_ptr); // 从外部缓冲区填充（长度至少 size_bytes()）
     void copy_to(void* host_ptr) const;   // 拷出到 host_ptr（长度至少 size_bytes()）
 
+    // 零拷贝重塑：仅当新形状元素总数与 numel_ 一致时成立；
+    // 仅限连续张量（当前所有张量均为连续，视图支持后需加 is_contiguous 检查）
+    void reshape_in_place(const std::vector<int>& new_shape);
+
     // 算子接口（示例）
+    static std::unique_ptr<Tensor> mm(const Tensor& a, const Tensor& b);
     static std::unique_ptr<Tensor> matmul(const Tensor& a, const Tensor& b);
     void add_(const Tensor& other); // In-place 加法
     
@@ -62,3 +72,5 @@ public:
     void* data() { return data_ptr_; }
     const void* data() const { return data_ptr_; }
 };
+
+} // namespace mlspirit

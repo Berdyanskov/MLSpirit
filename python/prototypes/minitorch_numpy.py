@@ -1,3 +1,12 @@
+"""（历史原型 · 第 1 课）numpy 版微型自动微分引擎。
+
+本文件是项目早期的学习稿：用 numpy 作为数据载体，
+走通了 Variable / Function / 计算图 / backward 的完整概念闭环。
+
+它故意保留、不再修改——作为"先理解概念、再深入工程"的对照组。
+正式的、跑在 mlspirit.Tensor（C++/CUDA 张量核）之上的 autograd 实现见：
+    python/autograd.py
+"""
 import numpy as np
 
 class Variable:
