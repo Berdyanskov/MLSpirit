@@ -125,4 +125,12 @@ PYBIND11_MODULE(mlspirit, m) {
     // 自由函数形式算子（对齐 mp.matmul(a, b) 的习惯）
     m.def("mm", &Tensor::mm, py::arg("a"), py::arg("b"));
     m.def("matmul", &Tensor::matmul, py::arg("a"), py::arg("b"));
+
+    // 逐元素与归约算子（任务二；全限定名避免与 <cmath> 的 ::exp 歧义）
+    m.def("add", &mlspirit::add, py::arg("a"), py::arg("b"));
+    m.def("sub", &mlspirit::sub, py::arg("a"), py::arg("b"));
+    m.def("mul", &mlspirit::mul, py::arg("a"), py::arg("b"));
+    m.def("div", &mlspirit::div, py::arg("a"), py::arg("b"));
+    m.def("exp", &mlspirit::exp, py::arg("x"));
+    m.def("sum", &mlspirit::sum, py::arg("x"));
 }

@@ -42,6 +42,27 @@ ok = got.shape == (3, 5) and np.allclose(got.numpy(), a_np.T @ b_np, rtol=1e-4, 
 print(f"transposed-view matmul {'PASS' if ok else 'FAIL'}")
 fails += 0 if ok else 1
 
+# ---- 任务二：逐元素算子与归约，含广播，与 numpy 对拍 ----
+x2_np = _rng_tv.standard_normal((2, 3)).astype(np.float32)
+y3_np = _rng_tv.standard_normal((3,)).astype(np.float32)
+xt, yt = mp.from_numpy(x2_np), mp.from_numpy(y3_np)
+for name, fn, ref in [("add", mp.add, x2_np + y3_np),
+                      ("sub", mp.sub, x2_np - y3_np),
+                      ("mul", mp.mul, x2_np * y3_np),
+                      ("div", mp.div, x2_np / y3_np)]:
+    got = fn(xt, yt)
+    ok = got.shape == ref.shape and np.allclose(got.numpy(), ref, rtol=1e-4, atol=1e-5)
+    print(f"broadcast {name:<5} {'PASS' if ok else 'FAIL'}")
+    fails += 0 if ok else 1
+e = mp.exp(xt)
+ok = np.allclose(e.numpy(), np.exp(x2_np), rtol=1e-4, atol=1e-5)
+print(f"exp          {'PASS' if ok else 'FAIL'}")
+fails += 0 if ok else 1
+st = mp.sum(xt)
+ok = st.shape == () and abs(float(st.numpy()) - float(x2_np.sum())) < 1e-4
+print(f"sum          {'PASS' if ok else 'FAIL'}")
+fails += 0 if ok else 1
+
 # 元数据
 t = mp.from_numpy(np.arange(24, dtype=np.float32).reshape(2, 3, 4))
 assert t.shape == (2, 3, 4) and t.strides == (12, 4, 1) and t.numel == 24

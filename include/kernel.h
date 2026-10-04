@@ -24,4 +24,29 @@ struct BatchInfo {
 void launch_matmul_kernel(const float* A, const float* B, float* C, int M, int N, int K,
                           size_t batch_count, const BatchInfo& info);
 
+// 连续化(gather) kernel 的形状描述：≤8 维按值传入 kernel（驻留 constant 参数区，
+// 省去为几个整数单独 cudaMalloc + HtoD 的开销）
+struct StrideDesc {
+    int ndim;
+    int shape[8];
+    int strides[8];  // 单位：元素（与 Tensor::strides_ 一致）
+};
+
+// dst[idx] = src[ idx 反推多维坐标后按 strides 的偏移 ]；src 为视图起始地址
+void launch_contiguous_kernel(const void* src, void* dst, size_t numel,
+                              const StrideDesc& desc, DataType dtype);
+
+// ---- 逐元素算子（任务二）----
+// 二元算子：输出形状为广播对齐结果，da/db 是 a/b 各自对齐后的 StrideDesc（广播维 0）
+enum class ElementwiseBinaryOp { Add, Sub, Mul, Div };
+void launch_elementwise_binary_kernel(const void* a, const void* b, void* dst, size_t numel,
+                                      const StrideDesc& da, const StrideDesc& db,
+                                      DataType dtype, ElementwiseBinaryOp op);
+// 一元 exp：单操作数
+void launch_exp_kernel(const void* src, void* dst, size_t numel,
+                       const StrideDesc& desc, DataType dtype);
+// 全归约：dst_scalar 指向设备上的单个元素（调用方负责清零）
+void launch_sum_kernel(const void* src, void* dst_scalar, size_t numel,
+                       const StrideDesc& desc, DataType dtype);
+
 } // namespace mlspirit

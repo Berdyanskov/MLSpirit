@@ -90,10 +90,6 @@ void Tensor::reshape_in_place(const std::vector<int>& new_shape) {
 }
 
 // ---------------- 视图（view）----------------
-// 视图 = 共享 Storage + 自己的 shape/strides/offset。
-// 关键认知：transpose 不碰任何数据，只交换两条元数据；读元素时按
-//   地址 = base + offset + Σ idx[d] * strides[d]
-// 换算，所以"转置后的读取"自然成立。
 
 Tensor::Tensor(std::shared_ptr<StorageImpl> storage, std::vector<int> shape,
                std::vector<int> strides, size_t offset, DataType dtype, DeviceType device)
@@ -104,7 +100,6 @@ Tensor::Tensor(std::shared_ptr<StorageImpl> storage, std::vector<int> shape,
 }
 
 bool Tensor::is_contiguous() const {
-    // 从最后一维向前验证行主序布局；shape 为 1 的维豁免（其 stride 不影响布局）
     size_t expected = 1;
     for (int i = static_cast<int>(shape_.size()) - 1; i >= 0; --i) {
         if (shape_[i] == 1) continue;
@@ -129,12 +124,27 @@ Tensor Tensor::transpose(int dim0, int dim1) const {
 }
 
 Tensor Tensor::contiguous() const {
-    if (is_contiguous()) return *this;   // 已连续：浅拷贝即"自身"，零成本
-    // 唯一会真正搬数据的地方：按 strides 逐元素寻址，物化为连续张量。
-    // 正确性优先版：CUDA 上逐元素 D2D memcpy（生产框架用 elementwise copy kernel）
+    if (is_contiguous()) return *this;
+    // 否则物化为连续张量。
     Tensor out(shape_, dtype_, device_);
     if (numel_ == 0) return out; // 空张量无元素可搬（也避免后续对 0 维取模）
-    const bool cuda = (device_ == DeviceType::CUDA);
+
+    if (device_ == DeviceType::CUDA) {
+        // GPU 走 gather kernel（contiguous.cu）。形状/步长元数据(≤8 维)按值传入
+        // kernel 驻留 constant 参数区，免去一次专门为元数据的 HtoD 拷贝
+        if (shape_.size() > 8)
+            throw std::runtime_error("contiguous: CUDA path supports at most 8 dims");
+        StrideDesc desc{};
+        desc.ndim = static_cast<int>(shape_.size());
+        for (size_t d = 0; d < shape_.size(); ++d) {
+            desc.shape[d] = shape_[d];
+            desc.strides[d] = strides_[d];
+        }
+        launch_contiguous_kernel(data(), out.data(), numel_, desc, dtype_);
+        return out;
+    }
+
+    // CPU：逐元素按 strides 寻址（与 gather kernel 同一段数学的串行版）
     const size_t es = element_size();
     const char* src = static_cast<const char*>(data());
     char* dst = static_cast<char*>(out.data());
@@ -146,10 +156,7 @@ Tensor Tensor::contiguous() const {
             off += (t % dim) * static_cast<size_t>(strides_[d]);
             t /= dim;
         }
-        if (cuda)
-            cudaMemcpy(dst + idx * es, src + off * es, es, cudaMemcpyDeviceToDevice);
-        else
-            std::memcpy(dst + idx * es, src + off * es, es);
+        std::memcpy(dst + idx * es, src + off * es, es);
     }
     return out;
 }
@@ -167,10 +174,9 @@ std::unique_ptr<Tensor> Tensor::mm(const Tensor& a, const Tensor& b) {
     if (a.device() == DeviceType::CUDA) {
         if (b.device() != DeviceType::CUDA)
             throw std::runtime_error("mm: device mismatch (a on CUDA, b on CPU)");
-        // kernel 只认行主序连续内存：非连续视图在入口处统一物化
         if (!a.is_contiguous() || !b.is_contiguous()) {
             Tensor a2 = a.contiguous(), b2 = b.contiguous();
-            return mm(a2, b2);   // 最多递归一层
+            return mm(a2, b2);
         }
         auto out = std::make_unique<Tensor>(std::vector<int>{M, N}, DataType::FP32, DeviceType::CUDA);
         launch_mm_kernel(static_cast<const float*>(a.data()),

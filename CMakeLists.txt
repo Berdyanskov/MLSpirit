@@ -19,8 +19,11 @@ find_package(CUDAToolkit REQUIRED)
 add_library(microtensor STATIC
     src/Tensor.cpp
     src/StorageImpl.cpp
+    src/ops_elementwise_cpu.cpp
     src/add.cu
     src/matmul.cu
+    src/contiguous.cu
+    src/elementwise.cu
 )
 target_include_directories(microtensor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(microtensor PUBLIC CUDA::cudart)
@@ -29,7 +32,7 @@ target_link_libraries(microtensor PUBLIC CUDA::cudart)
 option(MT_BUILD_TESTS "Build test executables" ON)
 if(MT_BUILD_TESTS)
     enable_testing()
-    foreach(t IN ITEMS test_tensor test_matmul test_gpu_matmul)
+    foreach(t IN ITEMS test_tensor test_matmul test_ops test_gpu_matmul)
         add_executable(${t} tests/${t}.cpp)
         target_link_libraries(${t} PRIVATE microtensor)
         add_test(NAME ${t} COMMAND ${t})

@@ -63,7 +63,6 @@ public:
     Tensor transpose(int dim0 = -2, int dim1 = -1) const;
     Tensor contiguous() const; // 非连续 -> 按 strides 物化连续副本；连续 -> 自身浅拷贝
 
-    // 算子接口（示例）
     static std::unique_ptr<Tensor> mm(const Tensor& a, const Tensor& b);
     static std::unique_ptr<Tensor> matmul(const Tensor& a, const Tensor& b);
     void add_(const Tensor& other); // In-place 加法

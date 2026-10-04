@@ -2,22 +2,24 @@
 
 与 prototypes/minitorch_numpy.py 的关系：
     架构完全一致（Variable / Function / creator / backward 循环），
-    唯一本质变化是数据载体 —— numpy.ndarray 换成了 mlspirit.Tensor，
-    前向计算因此自动获得 C++/CUDA 算子的全部能力。
+    唯一本质变化是数据载体 —— numpy.ndarray 换成了 mlspirit.Tensor。
 
-占位实现说明（重要的工程诚实）：
-    C++ 核目前只有 mm/matmul/add_ 三个算子。本文件中：
-    - matmul 的前向/反向都直接调用 C++ 核；
-    - 转置、clone、逐元素 square/exp 暂用 numpy 往返实现，
-      每个占位点都标注了对应的 C++ 侧待办（见各函数 docstring）。
-    这些占位会随 C++ 算子的补齐逐一替换，Python 侧框架代码不必再动。
+占位清零（任务二完成后）：
+    matmul / 转置 / add / mul / exp / sum 的前向全部走 C++/CUDA 核；
+    numpy 只剩两个合法用途：测试数据的 I/O，以及构造 0 维标量常量
+    （标量通过广播参与运算，见 Square.backward）。
+
+遗留限制（路线图任务三）：
+    若前向存在广播（如 bias 加法、broadcast matmul），反向需要把梯度
+    沿广播维 reduce 缩回（sum_to）——"广播的逆是求和"。当前 Add / MatMul
+    在"双方等形状"下梯度完全正确，广播输入下会返回未归约的梯度。
 """
 import numpy as np
 import mlspirit as mp
 
 
 # ---------------------------------------------------------------------------
-# 占位工具（C++ 侧待办：transpose view / clone / 逐元素 exp·mul / out-of-place add）
+# 工具
 # ---------------------------------------------------------------------------
 
 def _wrap(np_arr, device="cpu"):
@@ -25,9 +27,9 @@ def _wrap(np_arr, device="cpu"):
     return mp.from_numpy(np.ascontiguousarray(np_arr, dtype=np.float32), device=device)
 
 
-def _clone(t):
-    """深拷贝。待办：C++ 实现 Tensor::clone() 后替换。"""
-    return _wrap(t.numpy(), t.device)
+def _scalar(value, device="cpu"):
+    """Python 标量 -> 0 维 mp.Tensor（参与运算时自动广播到任意形状）。"""
+    return _wrap(np.array(value, dtype=np.float32), device=device)
 
 
 def _transpose(t):
@@ -35,13 +37,6 @@ def _transpose(t):
     if len(t.shape) < 2:
         raise ValueError("transpose requires ndim >= 2")
     return t.transpose(len(t.shape) - 2, len(t.shape) - 1)
-
-
-def _add(a, b):
-    """非原地加法。待办：C++ 实现 out-of-place add 后替换。"""
-    c = _clone(a)
-    c.add_(b)
-    return c
 
 
 def _ones_like(t):
@@ -78,7 +73,7 @@ class Variable:
                 if gx is None:
                     continue
                 # 梯度累加：一个变量被多条支路使用时，梯度是各支路之和
-                x.grad = gx if x.grad is None else _add(x.grad, gx)
+                x.grad = gx if x.grad is None else mp.add(x.grad, gx)
                 if x.creator is not None:
                     funcs.append(x.creator)
 
@@ -101,15 +96,13 @@ class Function:
 
 
 # ---------------------------------------------------------------------------
-# 算子
+# 算子（前向全部走 C++/CUDA 核）
 # ---------------------------------------------------------------------------
 
 class MatMul(Function):
     """Y = A @ B => dA = GY @ B^T, dB = A^T @ GY。
-    前向/反向全部由 C++ matmul 完成（含 CUDA 分派），B^T 走零拷贝 transpose 视图，
-    2D 与 batched 通吃。
-    遗留限制：若前向时 A/B 之间存在 batch 广播，反向还需沿广播维 reduce
-    （sum_to，属路线图任务三）；等 batch 或同形状下梯度完全正确。"""
+    B^T 走零拷贝 transpose 视图，2D 与 batched 通吃。
+    限制：存在 batch 广播时反向缺 sum_to 归约（任务三）。"""
 
     def forward(self, a, b):
         self.a, self.b = a, b
@@ -122,50 +115,49 @@ class MatMul(Function):
 
 
 class Square(Function):
-    """y = x^2 => gx = 2x·gy。占位：逐元素运算暂走 numpy。"""
+    """y = x^2 => gx = 2x·gy。前向 mp.mul(x, x)。"""
 
     def forward(self, x):
         self.x = x
-        return _wrap(np.square(x.numpy()), x.device)
+        return mp.mul(x, x)
 
     def backward(self, gy):
-        gx = 2.0 * self.x.numpy() * gy.numpy()
-        return _wrap(gx, self.x.device)
+        # 常数 2 以 0 维标量张量参与，广播成与 x 同形状——
+        # "标量乘法"在Tensor系统里其实就是"与 0 维张量的广播乘"
+        return mp.mul(mp.mul(_scalar(2.0, self.x.device), self.x), gy)
 
 
 class Exp(Function):
-    """y = e^x => gx = e^x·gy。占位：逐元素运算暂走 numpy。"""
+    """y = e^x => gx = e^x·gy。前向 mp.exp。"""
 
     def forward(self, x):
         self.x = x
-        return _wrap(np.exp(x.numpy()), x.device)
+        return mp.exp(x)
 
     def backward(self, gy):
-        gx = np.exp(self.x.numpy()) * gy.numpy()
-        return _wrap(gx, self.x.device)
+        return mp.mul(mp.exp(self.x), gy)
 
 
 class Sum(Function):
     """全部元素求和成 0 维标量（作为 loss 的终点站）。
-    => gx 是与 x 同形状的全 gy（标量广播），梯度恰好是"广播的逆运算"——
-    这是理解反向传播里 reduce 操作的最小例子。"""
-
+    => gx 是与 x 同形状的全 gy——反向恰好是"广播"：
+    0 维标量加到一个全零矩阵上，自动复制到每个位置。"""
     def forward(self, x):
         self.x_shape = x.shape
-        return _wrap(np.array(x.numpy().sum(), dtype=np.float32).reshape(()), x.device)
+        return mp.sum(x)
 
     def backward(self, gy):
-        scale = float(gy.numpy())
-        return _wrap(np.full(self.x_shape, scale, dtype=np.float32), gy.device)
+        zeros = _wrap(np.zeros(self.x_shape, dtype=np.float32), gy.device)
+        return mp.add(zeros, gy)   # 广播 = 反向传播的"复制梯度"
 
 
 class Add(Function):
-    """y = a + b（同形状）。=> ga = gy, gb = gy。
-    注意广播加法的反向需要把 gy 沿广播维 reduce 回去（Sum 的逆），
-    留待 C++ 广播逐元素算子落地后一并处理。"""
+    """y = a + b => ga = gy, gb = gy。
+    前向已支持广播；反向在广播输入下仍需 sum_to 归约（任务三），
+    等形状时梯度完全正确。"""
 
     def forward(self, a, b):
-        return _add(a, b)
+        return mp.add(a, b)
 
     def backward(self, gy):
         return gy, gy
