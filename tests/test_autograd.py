@@ -4,7 +4,7 @@ ctest 自动注入 PYTHONPATH（扩展模块目录 + python/ 源码目录）。C
 CUDA 不参与本测试（逐元素占位算子走 numpy 往返，与设备无关）。
 """
 import numpy as np
-import mlspirit as mp
+import mlspirit as mls
 from mlspirit import autograd as ag
 
 fails = 0
@@ -22,7 +22,7 @@ def close(grad_tensor, ref_np, rtol=2e-3, atol=1e-4):
 
 
 def numerical_grad(f, x_np, eps=1e-3):
-    """对 f: np.ndarray -> 0 维 mp.Tensor 做中心差分。"""
+    """对 f: np.ndarray -> 0 维 mls.Tensor 做中心差分。"""
     grad = np.zeros_like(x_np)
     it = np.nditer(x_np, flags=["multi_index"])
     for _ in it:

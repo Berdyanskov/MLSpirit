@@ -51,7 +51,7 @@ std::string dtype_str(DataType d) {
 
 PYBIND11_MODULE(_mlspirit, m) {
     m.doc() = "MLSpirit C++/CUDA 扩展核心（下划线前缀 = 包私有）。\n"
-              "用户请 import 外层 Python 包: import mlspirit as mp"
+              "用户请 import 外层 Python 包: import mlspirit as mls"
               "（对标 torch 的 torch._C 扩展）";
 
     // 枚举导出（与 C++ 侧一一对应）
@@ -65,7 +65,7 @@ PYBIND11_MODULE(_mlspirit, m) {
         .value("INT8", DataType::INT8);
 
     py::class_<Tensor>(m, "Tensor")
-        // mp.Tensor([2, 3], dtype=..., device="cpu")
+        // mls.Tensor([2, 3], dtype=..., device="cpu")
         .def(py::init([](std::vector<int> shape, DataType dtype, const std::string& device) {
                  if (dtype != DataType::FP32)
                      throw std::invalid_argument("v0 only supports FP32 tensors");
@@ -123,7 +123,7 @@ PYBIND11_MODULE(_mlspirit, m) {
           },
           py::arg("arr"), py::arg("device") = "cpu");
 
-    // 自由函数形式算子（对齐 mp.matmul(a, b) 的习惯）
+    // 自由函数形式算子（对齐 mls.matmul(a, b)）
     m.def("mm", &Tensor::mm, py::arg("a"), py::arg("b"));
     m.def("matmul", &Tensor::matmul, py::arg("a"), py::arg("b"));
 

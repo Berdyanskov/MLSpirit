@@ -12,7 +12,7 @@
 import numpy as np
 
 # 直接引用包内的扩展核心（而不是外层包 mlspirit），避免包初始化期的循环导入
-from . import _mlspirit as mp
+from . import _mlspirit as mls
 
 
 # ---------------------------------------------------------------------------
@@ -20,12 +20,12 @@ from . import _mlspirit as mp
 # ---------------------------------------------------------------------------
 
 def _wrap(np_arr, device="cpu"):
-    """numpy -> mp.Tensor（float32、C 连续）。"""
-    return mp.from_numpy(np.ascontiguousarray(np_arr, dtype=np.float32), device=device)
+    """numpy -> mls.Tensor（float32、C 连续）。"""
+    return mls.from_numpy(np.ascontiguousarray(np_arr, dtype=np.float32), device=device)
 
 
 def _scalar(value, device="cpu"):
-    """Python 标量 -> 0 维 mp.Tensor（参与运算时自动广播到任意形状）。"""
+    """Python 标量 -> 0 维 mls.Tensor（参与运算时自动广播到任意形状）。"""
     return _wrap(np.array(value, dtype=np.float32), device=device)
 
 
@@ -42,9 +42,9 @@ def _ones_like(t):
 class Variable:
     """叶子是参数/输入，非叶子由 Function 创建并记录 creator。"""
 
-    def __init__(self, data: mp.Tensor):
+    def __init__(self, data: mls.Tensor):
         self.data = data
-        self.grad = None       # mp.Tensor，与 data 同形状
+        self.grad = None       # mls.Tensor，与 data 同形状
         self.creator = None
 
     def set_creator(self, func):
@@ -65,7 +65,7 @@ class Variable:
                 if gx is None:
                     continue
                 # 梯度累加：一个变量被多条支路使用时，梯度是各支路之和
-                x.grad = gx if x.grad is None else mp.add(x.grad, gx)
+                x.grad = gx if x.grad is None else mls.add(x.grad, gx)
                 if x.creator is not None:
                     funcs.append(x.creator)
 
@@ -79,10 +79,10 @@ class Function:
         self.output = output
         return output
 
-    def forward(self, *datas: mp.Tensor) -> mp.Tensor:
+    def forward(self, *datas: mls.Tensor) -> mls.Tensor:
         raise NotImplementedError
 
-    def backward(self, gy: mp.Tensor):
+    def backward(self, gy: mls.Tensor):
         """返回与 inputs 对齐的梯度元组。"""
         raise NotImplementedError
 
@@ -99,38 +99,38 @@ class MatMul(Function):
 
     def forward(self, a, b):
         self.a, self.b = a, b
-        return mp.matmul(a, b)
+        return mls.matmul(a, b)
 
     def backward(self, gy):
-        ga_raw = mp.matmul(gy, _transpose(self.b))
-        gb_raw = mp.matmul(_transpose(self.a), gy)
-        ga = ga_raw if ga_raw.shape == self.a.shape else mp.sum_to(ga_raw, self.a.shape)
-        gb = gb_raw if gb_raw.shape == self.b.shape else mp.sum_to(gb_raw, self.b.shape)
+        ga_raw = mls.matmul(gy, _transpose(self.b))
+        gb_raw = mls.matmul(_transpose(self.a), gy)
+        ga = ga_raw if ga_raw.shape == self.a.shape else mls.sum_to(ga_raw, self.a.shape)
+        gb = gb_raw if gb_raw.shape == self.b.shape else mls.sum_to(gb_raw, self.b.shape)
         return ga, gb
 
 
 class Square(Function):
-    """y = x^2 => gx = 2x·gy。前向 mp.mul(x, x)。"""
+    """y = x^2 => gx = 2x·gy。前向 mls.mul(x, x)。"""
 
     def forward(self, x):
         self.x = x
-        return mp.mul(x, x)
+        return mls.mul(x, x)
 
     def backward(self, gy):
         # 常数 2 以 0 维标量张量参与，广播成与 x 同形状——
         # "标量乘法"在Tensor系统里其实就是"与 0 维张量的广播乘"
-        return mp.mul(mp.mul(_scalar(2.0, self.x.device), self.x), gy)
+        return mls.mul(mls.mul(_scalar(2.0, self.x.device), self.x), gy)
 
 
 class Exp(Function):
-    """y = e^x => gx = e^x·gy。前向 mp.exp。"""
+    """y = e^x => gx = e^x·gy。前向 mls.exp。"""
 
     def forward(self, x):
         self.x = x
-        return mp.exp(x)
+        return mls.exp(x)
 
     def backward(self, gy):
-        return mp.mul(mp.exp(self.x), gy)
+        return mls.mul(mls.exp(self.x), gy)
 
 
 class Sum(Function):
@@ -139,11 +139,11 @@ class Sum(Function):
     0 维标量加到一个全零矩阵上，自动复制到每个位置。"""
     def forward(self, x):
         self.x_shape = x.shape
-        return mp.sum(x)
+        return mls.sum(x)
 
     def backward(self, gy):
         zeros = _wrap(np.zeros(self.x_shape, dtype=np.float32), gy.device)
-        return mp.add(zeros, gy)   # 广播 = 反向传播的"复制梯度"
+        return mls.add(zeros, gy)   # 广播 = 反向传播的"复制梯度"
 
 
 class Add(Function):
@@ -153,11 +153,11 @@ class Add(Function):
 
     def forward(self, a, b):
         self.a_shape, self.b_shape = a.shape, b.shape
-        return mp.add(a, b)
+        return mls.add(a, b)
 
     def backward(self, gy):
-        ga = gy if gy.shape == self.a_shape else mp.sum_to(gy, self.a_shape)
-        gb = gy if gy.shape == self.b_shape else mp.sum_to(gy, self.b_shape)
+        ga = gy if gy.shape == self.a_shape else mls.sum_to(gy, self.a_shape)
+        gb = gy if gy.shape == self.b_shape else mls.sum_to(gy, self.b_shape)
         return ga, gb
 
 

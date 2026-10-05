@@ -44,7 +44,7 @@ compiled, so CI can verify them).
 ## Quick start (Python)
 
 The build drops the `_mlspirit` extension right into the Python package directory.
-Put that directory on `PYTHONPATH` and `import mlspirit as mp` — one import gives
+Put that directory on `PYTHONPATH` and `import mlspirit as mls` — one import gives
 you the compute core and the autograd engine (mirroring `torch` over `torch._C`):
 
 ```bash
@@ -53,19 +53,19 @@ PYTHONPATH=python python3
 
 ```python
 import numpy as np
-import mlspirit as mp
+import mlspirit as mls
 
-a = mp.from_numpy(np.random.randn(4, 5, 6).astype(np.float32), device="cuda")
-b = mp.from_numpy(np.random.randn(6, 3).astype(np.float32), device="cuda")
-c = mp.matmul(a, b)          # dispatches to the CUDA batched kernel (b broadcast over batch)
+a = mls.from_numpy(np.random.randn(4, 5, 6).astype(np.float32), device="cuda")
+b = mls.from_numpy(np.random.randn(6, 3).astype(np.float32), device="cuda")
+c = mls.matmul(a, b)          # dispatches to the CUDA batched kernel (b broadcast over batch)
 c.shape                      # (4, 5, 3)
 c.to("cpu").numpy()          # copy back to host as a numpy array
 
 # autograd lives in the same package, as a sub-namespace (like torch.autograd)
-x = mp.autograd.variable(np.random.randn(3, 4).astype(np.float32))
-loss = mp.autograd.sum_all(mp.autograd.square(x))
+x = mls.autograd.variable(np.random.randn(3, 4).astype(np.float32))
+loss = mls.autograd.sum_all(mls.autograd.square(x))
 loss.backward()
-x.grad                       # mp.Tensor, == 2x
+x.grad                       # mls.Tensor, == 2x
 ```
 
 ## Quick start (C++)
@@ -74,7 +74,7 @@ All public APIs live in the `mlspirit` namespace — one header is all you need:
 
 ```cpp
 #include "mlspirit.hpp"
-using namespace mlspirit;   // or the short alias mp::
+using namespace mlspirit;   // or the short alias mls::
 
 Tensor a({2, 3}, DataType::FP32, DeviceType::CPU);
 Tensor b({3, 2}, DataType::FP32, DeviceType::CPU);
@@ -90,7 +90,7 @@ c->to_device(DeviceType::CPU);
 - [x] Zero-copy `reshape_in_place`, strides derivation
 - [x] `mm` (strict 2D): naive CPU loop + CUDA tiled GEMM (128×128 tile, SMEM + 8×8 register blocking)
 - [x] `matmul`: N-D batched + broadcasting (batch folded into `gridDim.z`, broadcast via stride-0)
-- [x] Python bindings (pybind11): `import mlspirit as mp`, explicit numpy conversion
+- [x] Python bindings (pybind11): `import mlspirit as mls`, explicit numpy conversion
 - [x] Autodiff engine (`python/autograd.py`): define-by-run graph + iterative backprop +
       gradient accumulation, verified by numerical gradient checks; matmul backward runs
       entirely on the C++ core
