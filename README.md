@@ -17,7 +17,9 @@ A machine learning library built from scratch for teaching purposes. The main li
 ├── bindings/           # pybind11 layer (translation only, no compute logic)
 ├── tests/              # C++/Python tests (no framework dependency), run via `ctest`
 ├── python/
-│   ├── autograd.py     # Autodiff engine on top of mlspirit.Tensor (lesson 2)
+│   ├── mlspirit/       # The Python package users import (like `torch` over `torch._C`)
+│   │   ├── __init__.py     # Re-exports the _mlspirit extension into one namespace
+│   │   └── autograd.py     # Autodiff engine on top of mlspirit.Tensor (lesson 2)
 │   └── prototypes/
 │       └── minitorch_numpy.py  # Historical prototype: numpy-based autodiff (lesson 1)
 ├── visualize/          # Interactive teaching visualizations (open in a browser)
@@ -41,11 +43,12 @@ compiled, so CI can verify them).
 
 ## Quick start (Python)
 
-After building, put the extension module directory on `PYTHONPATH` and
-`import mlspirit as mp`:
+The build drops the `_mlspirit` extension right into the Python package directory.
+Put that directory on `PYTHONPATH` and `import mlspirit as mp` — one import gives
+you the compute core and the autograd engine (mirroring `torch` over `torch._C`):
 
 ```bash
-PYTHONPATH=build python3
+PYTHONPATH=python python3
 ```
 
 ```python
@@ -57,6 +60,12 @@ b = mp.from_numpy(np.random.randn(6, 3).astype(np.float32), device="cuda")
 c = mp.matmul(a, b)          # dispatches to the CUDA batched kernel (b broadcast over batch)
 c.shape                      # (4, 5, 3)
 c.to("cpu").numpy()          # copy back to host as a numpy array
+
+# autograd lives in the same package, as a sub-namespace (like torch.autograd)
+x = mp.autograd.variable(np.random.randn(3, 4).astype(np.float32))
+loss = mp.autograd.sum_all(mp.autograd.square(x))
+loss.backward()
+x.grad                       # mp.Tensor, == 2x
 ```
 
 ## Quick start (C++)

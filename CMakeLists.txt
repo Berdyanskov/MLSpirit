@@ -50,16 +50,19 @@ if(MT_BUILD_PYTHON)
     )
     find_package(pybind11 CONFIG QUIET)
     if(pybind11_FOUND)
-        pybind11_add_module(mlspirit MODULE bindings/mlspirit_py.cpp)
-        target_link_libraries(mlspirit PRIVATE microtensor)
-        # python -c "import mlspirit" 时能找到刚构建的扩展模块
+        # 扩展核心编译为包私有模块 _mlspirit，直接落进 Python 包目录
+        #（对标 torch 的 torch._C；PYTHONPATH=python 即可 import mlspirit）
+        pybind11_add_module(_mlspirit MODULE bindings/mlspirit_py.cpp)
+        target_link_libraries(_mlspirit PRIVATE microtensor)
+        set_target_properties(_mlspirit PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python/mlspirit)
         if(MT_BUILD_TESTS)
             add_test(NAME python_bindings COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mlspirit.py)
             set_tests_properties(python_bindings PROPERTIES
-                ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:mlspirit>")
+                ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/python")
             add_test(NAME python_autograd COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_autograd.py)
             set_tests_properties(python_autograd PROPERTIES
-                ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:mlspirit>:${CMAKE_CURRENT_SOURCE_DIR}/python")
+                ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/python")
         endif()
     else()
         message(WARNING "pybind11 not found (pip install pybind11); skipping Python bindings")

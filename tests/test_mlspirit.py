@@ -63,6 +63,17 @@ ok = st.shape == () and abs(float(st.numpy()) - float(x2_np.sum())) < 1e-4
 print(f"sum          {'PASS' if ok else 'FAIL'}")
 fails += 0 if ok else 1
 
+# ---- 任务三：sum_to（广播的逆），与 numpy 对拍 ----
+s3_np = np.arange(24, dtype=np.float32).reshape(4, 2, 3)
+s3t = mp.from_numpy(s3_np)
+for target, ref in [((2, 3), s3_np.sum(axis=0)),
+                    ((3,), s3_np.sum(axis=(0, 1))),
+                    ((2, 1), s3_np.sum(axis=(0, 2)).reshape(2, 1))]:
+    got = mp.sum_to(s3t, list(target))
+    ok = got.shape == target and np.allclose(got.numpy(), ref.astype(np.float32), rtol=1e-5)
+    print(f"sum_to -> {str(target):<8} {'PASS' if ok else 'FAIL'}")
+    fails += 0 if ok else 1
+
 # 元数据
 t = mp.from_numpy(np.arange(24, dtype=np.float32).reshape(2, 3, 4))
 assert t.shape == (2, 3, 4) and t.strides == (12, 4, 1) and t.numel == 24

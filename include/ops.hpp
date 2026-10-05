@@ -26,4 +26,9 @@ Tensor exp(const Tensor& x);
 // 全归约：所有元素求和，输出 0 维标量张量
 Tensor sum(const Tensor& x);
 
+// 形状归约（广播的逆运算、广播算子反向的基石）：
+// 沿"广播时被复制"的维度求和，把 x 的形状收回到 shape。
+// 约定：len(shape) ≤ x.ndim；从右对齐后每维要么等于 x 对应维、要么为 1。
+Tensor sum_to(const Tensor& x, const std::vector<int>& shape);
+
 } // namespace mlspirit

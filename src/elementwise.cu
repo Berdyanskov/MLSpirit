@@ -186,6 +186,38 @@ void launch_exp_kernel(const void* src, void* dst, size_t numel,
                                  cudaGetErrorString(err));
 }
 
+// ---- 形状归约 kernel：sum_to（广播的逆运算）----
+// 以输出为中心：每线程负责一个输出元素，串行扫描它扇入的折叠维坐标组合。
+// 输出元素之间无共享、无 __syncthreads，越界线程直接 return 是安全的。
+template <typename T>
+__global__ void sum_to_kernel(const T* __restrict__ src, T* __restrict__ dst,
+                              size_t dst_numel, size_t fan_in, SumToDesc desc) {
+    const size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= dst_numel) return;
+
+    // dst 扁平下标 -> 输出坐标 -> 固定部分偏移：折叠维 out_shape[d]==1 使坐标恒 0，
+    // 项自然消失，无需显式区分"保留维 / 折叠维"
+    size_t off_base = 0, t = idx;
+    for (int d = desc.ndim - 1; d >= 0; --d) {
+        const size_t coord = t % desc.out_shape[d];
+        off_base += coord * static_cast<size_t>(desc.in_strides[d]); //注意这里是coord乘以输入张量相应维度的步长，因此off_base最终是输入张量中将被加入该输出元素的多个元素的起始下标
+        t /= desc.out_shape[d];
+    }
+
+    // 串行枚举折叠维坐标组合（同样的取模分解，只是维度表换成折叠维表）
+    float acc = 0.0f;
+    for (size_t c = 0; c < fan_in; ++c) {
+        size_t off = off_base, u = c;
+        for (int k = desc.n_collapsed - 1; k >= 0; --k) {
+            const size_t cc = u % desc.col_shape[k];
+            off += cc * static_cast<size_t>(desc.col_strides[k]);
+            u /= desc.col_shape[k];
+        }
+        acc += static_cast<float>(src[off]);
+    }
+    dst[idx] = static_cast<T>(acc);
+}
+
 void launch_sum_kernel(const void* src, void* dst_scalar, size_t numel,
                        const StrideDesc& desc, DataType dtype) {
     if (numel == 0) return;
@@ -200,6 +232,23 @@ void launch_sum_kernel(const void* src, void* dst_scalar, size_t numel,
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess)
         throw std::runtime_error(std::string("launch_sum_kernel: ") +
+                                 cudaGetErrorString(err));
+}
+
+void launch_sum_to_kernel(const void* src, void* dst, size_t dst_numel, size_t fan_in,
+                          const SumToDesc& desc, DataType dtype) {
+    if (dst_numel == 0) return;
+    if (dtype != DataType::FP32)
+        throw std::runtime_error("launch_sum_to_kernel: FP32 only for now");
+
+    const int block = 256;
+    const size_t grid = (dst_numel + block - 1) / block;
+    sum_to_kernel<float><<<grid, block>>>(static_cast<const float*>(src),
+                                          static_cast<float*>(dst), dst_numel, fan_in, desc);
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess)
+        throw std::runtime_error(std::string("launch_sum_to_kernel: ") +
                                  cudaGetErrorString(err));
 }
 

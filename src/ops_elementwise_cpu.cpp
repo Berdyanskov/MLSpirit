@@ -237,4 +237,91 @@ Tensor sum(const Tensor& x) {
     return out;
 }
 
+// 广播的逆运算：把 x 沿"广播时被复制"的维度求和，收回 shape。
+// 与 numpy 语义等价：target 从右对齐，维数 ≤ x.ndim，每维要么相等要么为 1。
+//
+// 实现关键（CPU/kernel 同构）：目标形状左补 1 对齐到 x 的维数后，
+// 折叠维 = out_shape[d]==1 && in_shape[d]>1 的维。
+// 以输出为中心——每个输出元素 = 固定坐标截面上对所有折叠维坐标组合求和，
+// 输入视图直读，不需要先 contiguous。
+Tensor sum_to(const Tensor& x, const std::vector<int>& shape) {
+    const int nx = static_cast<int>(x.shape().size());
+    const int ny = static_cast<int>(shape.size());
+    if (ny > nx)
+        throw std::runtime_error("sum_to: target ndim exceeds source ndim");
+    const int lead = nx - ny;
+    for (int i = 0; i < ny; ++i) {
+        const int s = x.shape()[lead + i];
+        if (shape[i] != s && shape[i] != 1)
+            throw std::runtime_error("sum_to: target shape incompatible with source shape");
+    }
+    if (x.dtype() != DataType::FP32)
+        throw std::runtime_error("sum_to: FP32 only for now");
+    if (x.shape().size() > 8)
+        throw std::runtime_error("sum_to: at most 8 dims");
+
+    // 左补 1 对齐；折叠维表
+    std::vector<int> out_shape(nx, 1);
+    for (int i = 0; i < ny; ++i) out_shape[lead + i] = shape[i];
+    int col_shape[8], col_strides[8], nc = 0;
+    size_t fan_in = 1;
+    for (int d = 0; d < nx; ++d) {
+        if (out_shape[d] == 1 && x.shape()[d] > 1) {
+            col_shape[nc] = x.shape()[d];
+            col_strides[nc] = x.strides()[d];
+            ++nc;
+            fan_in *= static_cast<size_t>(x.shape()[d]);
+        }
+    }
+
+    Tensor out_full(out_shape, x.dtype(), x.device());
+
+    if (x.numel() == 0) {
+        // 扇入为空（输入含 0 大小的维）：和为 0
+        std::vector<float> zeros(out_full.numel(), 0.0f);
+        out_full.copy_from(zeros.data());
+    } else if (x.device() == DeviceType::CUDA) {
+        SumToDesc desc{};
+        desc.ndim = nx;
+        desc.n_collapsed = nc;
+        for (int d = 0; d < nx; ++d) {
+            desc.out_shape[d] = out_shape[d];
+            desc.in_strides[d] = x.strides()[d];
+        }
+        for (int k = 0; k < nc; ++k) {
+            desc.col_shape[k] = col_shape[k];
+            desc.col_strides[k] = col_strides[k];
+        }
+        launch_sum_to_kernel(x.data(), out_full.data(), out_full.numel(), fan_in,
+                             desc, x.dtype());
+    } else {
+        // CPU：与 sum_to_kernel 同一段数学的串行版
+        const float* px = static_cast<const float*>(x.data());
+        float* po = static_cast<float*>(out_full.data());
+        for (size_t idx = 0; idx < out_full.numel(); ++idx) {
+            size_t off_base = 0, t = idx;
+            for (int d = nx - 1; d >= 0; --d) {
+                const size_t coord = t % static_cast<size_t>(out_shape[d]);
+                off_base += coord * static_cast<size_t>(x.strides()[d]);
+                t /= static_cast<size_t>(out_shape[d]);
+            }
+            float acc = 0.0f;
+            for (size_t c = 0; c < fan_in; ++c) {
+                size_t off = off_base, u = c;
+                for (int k = nc - 1; k >= 0; --k) {
+                    const size_t cc = u % static_cast<size_t>(col_shape[k]);
+                    off += cc * static_cast<size_t>(col_strides[k]);
+                    u /= static_cast<size_t>(col_shape[k]);
+                }
+                acc += px[off];
+            }
+            po[idx] = acc;
+        }
+    }
+
+    // 挤掉左侧补齐的维：输出本身连续，reshape 纯元数据零拷贝
+    out_full.reshape_in_place(shape);
+    return out_full;
+}
+
 } // namespace mlspirit

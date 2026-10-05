@@ -49,4 +49,21 @@ void launch_exp_kernel(const void* src, void* dst, size_t numel,
 void launch_sum_kernel(const void* src, void* dst_scalar, size_t numel,
                        const StrideDesc& desc, DataType dtype);
 
+// ---- 形状归约（广播的逆运算）----
+// sum_to 的形状描述：输入与输出按同一维数（= x.ndim）对齐，目标形状左侧补 1。
+// 折叠维(out_shape[d]==1 && in_shape[d]>1)单独成表，按值传入 kernel。
+struct SumToDesc {
+    int ndim;            // 对齐后的维数
+    int out_shape[8];    // 左补 1 后的目标形状
+    int in_strides[8];   // 输入 views 的 strides（单位：元素）
+    int n_collapsed;     // 折叠维个数
+    int col_shape[8];    // 折叠维在输入中的大小
+    int col_strides[8];  // 折叠维在输入中的 strides
+};
+
+// 以输出为中心：dst[idx] = Σ_{折叠维坐标组合} src[off_base + Σ c[d]·col_strides[d]]，
+// fan_in = Π col_shape（折叠维组合的个数）；src 为视图起始地址，dst 连续
+void launch_sum_to_kernel(const void* src, void* dst, size_t dst_numel, size_t fan_in,
+                          const SumToDesc& desc, DataType dtype);
+
 } // namespace mlspirit

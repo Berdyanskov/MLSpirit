@@ -1,21 +1,18 @@
 """mlspirit 自动微分引擎（第 2 课：跑在自家张量核上的计算图）。
 
-与 prototypes/minitorch_numpy.py 的关系：
-    架构完全一致（Variable / Function / creator / backward 循环），
-    唯一本质变化是数据载体 —— numpy.ndarray 换成了 mlspirit.Tensor。
-
 占位清零（任务二完成后）：
     matmul / 转置 / add / mul / exp / sum 的前向全部走 C++/CUDA 核；
     numpy 只剩两个合法用途：测试数据的 I/O，以及构造 0 维标量常量
     （标量通过广播参与运算，见 Square.backward）。
 
-遗留限制（路线图任务三）：
-    若前向存在广播（如 bias 加法、broadcast matmul），反向需要把梯度
-    沿广播维 reduce 缩回（sum_to）——"广播的逆是求和"。当前 Add / MatMul
-    在"双方等形状"下梯度完全正确，广播输入下会返回未归约的梯度。
+广播反向（任务三）：
+    Add / MatMul 的反向借助 C++ 原生 sum_to 把梯度沿广播维收回参数形状
+    ——"广播的逆是求和"，bias 加法、2D 权重 × batched 输入等场景梯度完全正确。
 """
 import numpy as np
-import mlspirit as mp
+
+# 直接引用包内的扩展核心（而不是外层包 mlspirit），避免包初始化期的循环导入
+from . import _mlspirit as mp
 
 
 # ---------------------------------------------------------------------------
@@ -41,11 +38,6 @@ def _transpose(t):
 
 def _ones_like(t):
     return _wrap(np.ones(t.shape, dtype=np.float32), t.device)
-
-
-# ---------------------------------------------------------------------------
-# 计算图核心（与 minitorch_numpy.py 同构，注释从简，对照阅读）
-# ---------------------------------------------------------------------------
 
 class Variable:
     """叶子是参数/输入，非叶子由 Function 创建并记录 creator。"""
@@ -102,15 +94,18 @@ class Function:
 class MatMul(Function):
     """Y = A @ B => dA = GY @ B^T, dB = A^T @ GY。
     B^T 走零拷贝 transpose 视图，2D 与 batched 通吃。
-    限制：存在 batch 广播时反向缺 sum_to 归约（任务三）。"""
+    存在 batch 广播时（如 2D weights + batched inputs），raw 梯度带有广播出的
+    batch 维，用 sum_to 沿 batch 维收回参数形状——"广播的逆是求和"。"""
 
     def forward(self, a, b):
         self.a, self.b = a, b
         return mp.matmul(a, b)
 
     def backward(self, gy):
-        ga = mp.matmul(gy, _transpose(self.b))
-        gb = mp.matmul(_transpose(self.a), gy)
+        ga_raw = mp.matmul(gy, _transpose(self.b))
+        gb_raw = mp.matmul(_transpose(self.a), gy)
+        ga = ga_raw if ga_raw.shape == self.a.shape else mp.sum_to(ga_raw, self.a.shape)
+        gb = gb_raw if gb_raw.shape == self.b.shape else mp.sum_to(gb_raw, self.b.shape)
         return ga, gb
 
 
@@ -152,15 +147,18 @@ class Sum(Function):
 
 
 class Add(Function):
-    """y = a + b => ga = gy, gb = gy。
-    前向已支持广播；反向在广播输入下仍需 sum_to 归约（任务三），
-    等形状时梯度完全正确。"""
+    """y = a + b（支持广播）。=> ga = gy, gb = gy，
+    若某输入在广播中被"复制"过，它的梯度要把 gy 沿广播维加回来（sum_to）——
+    广播前向的逆运算是归约，这是反向传播里所有 reduce 操作的统一来源。"""
 
     def forward(self, a, b):
+        self.a_shape, self.b_shape = a.shape, b.shape
         return mp.add(a, b)
 
     def backward(self, gy):
-        return gy, gy
+        ga = gy if gy.shape == self.a_shape else mp.sum_to(gy, self.a_shape)
+        gb = gy if gy.shape == self.b_shape else mp.sum_to(gy, self.b_shape)
+        return ga, gb
 
 
 # 便捷函数（对齐 torch 的函数式调用习惯）

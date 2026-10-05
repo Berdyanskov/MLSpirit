@@ -46,6 +46,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 .ipynb_checkpoints/
+# 构建产物：包内扩展模块
+python/**/*.so
 
 # 数据文件（通常很大，不应上传）
 *.bin

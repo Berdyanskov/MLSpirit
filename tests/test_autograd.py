@@ -5,8 +5,7 @@ CUDA 不参与本测试（逐元素占位算子走 numpy 往返，与设备无�
 """
 import numpy as np
 import mlspirit as mp
-
-import autograd as ag
+from mlspirit import autograd as ag
 
 fails = 0
 
@@ -84,6 +83,32 @@ ref_gx = np.matmul(ones3, w3_np.transpose(0, 2, 1))
 ref_gw = np.matmul(x3_np.transpose(0, 2, 1), ones3)
 report("batched matmul grad X", close(x.grad, ref_gx))
 report("batched matmul grad W", close(w.grad, ref_gw))
+
+# 7) 广播 add 的反向（bias 模式）：y = sum(x + b), x:[2,3], b:[3]
+#    gx = gy 原样（x 未被广播），gb = gy 沿 dim0 坍缩 → 每个分量是 2
+b_np = rng.standard_normal((3,)).astype(np.float32)
+x, b = ag.variable(x_np), ag.variable(b_np)
+ag.sum_all(ag.add(x, b)).backward()
+report("bcast add grad X", close(x.grad, np.ones((2, 3), np.float32)))
+report("bcast add grad b", close(b.grad, np.full((3,), 2.0, np.float32)))
+
+# 8) broadcast matmul 反向：X[2,3,4] @ W[4,5] → sum
+#    gX = ones[2,3,5] @ W^T；gW = Σ_b X[b]^T @ ones[3,5]（batch 维坍缩）
+w2_np = rng.standard_normal((4, 5)).astype(np.float32)
+x, w = ag.variable(x3_np), ag.variable(w2_np)
+ag.sum_all(ag.matmul(x, w)).backward()
+ref_gx2 = np.matmul(np.ones((2, 3, 5), np.float32), w2_np.T)
+ref_gw2 = np.matmul(x3_np.transpose(0, 2, 1), np.ones((2, 3, 5), np.float32)).sum(axis=0)
+report("bcast matmul grad X", close(x.grad, ref_gx2))
+report("bcast matmul grad W", close(w.grad, ref_gw2))
+
+# 9) broadcast matmul 复合链的数值梯度（sum_to 在更深的图里）
+def chain_bmm(a):
+    return ag.sum_all(ag.square(ag.matmul(ag.variable(a), ag.variable(w2_np))))
+x, w = ag.variable(x3_np), ag.variable(w2_np)
+ag.sum_all(ag.square(ag.matmul(x, w))).backward()
+num_bmm = numerical_grad(chain_bmm, x3_np)
+report("bcast matmul chain (num)", close(x.grad, num_bmm, rtol=1e-2, atol=1e-2))
 
 print("ALL PASS" if fails == 0 else f"{fails} FAILURES")
 raise SystemExit(0 if fails == 0 else 1)

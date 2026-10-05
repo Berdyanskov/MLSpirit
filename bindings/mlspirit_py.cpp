@@ -49,9 +49,10 @@ std::string dtype_str(DataType d) {
 
 } // namespace
 
-PYBIND11_MODULE(mlspirit, m) {
-    m.doc() = "MLSpirit: 从零实现的张量计算库（教学项目）\n"
-              "用法: import mlspirit as mp";
+PYBIND11_MODULE(_mlspirit, m) {
+    m.doc() = "MLSpirit C++/CUDA 扩展核心（下划线前缀 = 包私有）。\n"
+              "用户请 import 外层 Python 包: import mlspirit as mp"
+              "（对标 torch 的 torch._C 扩展）";
 
     // 枚举导出（与 C++ 侧一一对应）
     py::enum_<DeviceType>(m, "Device")
@@ -133,4 +134,7 @@ PYBIND11_MODULE(mlspirit, m) {
     m.def("div", &mlspirit::div, py::arg("a"), py::arg("b"));
     m.def("exp", &mlspirit::exp, py::arg("x"));
     m.def("sum", &mlspirit::sum, py::arg("x"));
+
+    // 形状归约（广播的逆；广播算子反向的基石）
+    m.def("sum_to", &mlspirit::sum_to, py::arg("x"), py::arg("shape"));
 }

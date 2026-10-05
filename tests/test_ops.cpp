@@ -132,9 +132,41 @@ int main() {
             assert(close(rtv[i], std::exp(av[order[i]])));
     }
 
-    // TODO(CUDA): add/sum 与 CPU 对拍（远程 H200 infra，同 test_gpu_matmul）
-    // TODO(exp): [2,3] 逐元素 vs std::exp；转置视图输入
-    // TODO(CUDA): add/sum 与 CPU 对拍（远程 H200 infra，同 test_gpu_matmul）
+    // ---- sum_to：广播的逆运算 ----
+    {
+        Tensor a({2, 3}, DataType::FP32, DeviceType::CPU);
+        std::vector<float> av = {1,2,3, 4,5,6};
+        a.copy_from(av.data());
+
+        auto r = sum_to(a, {3});                 // 沿 dim0 坍缩: 列和
+        assert((r.shape() == std::vector<int>{3}));
+        auto rv = read(r);
+        assert(close(rv[0], 5.f) && close(rv[1], 7.f) && close(rv[2], 9.f));
+
+        auto r2 = sum_to(a, {2, 1});             // 沿 dim1 坍缩: 行和
+        assert((r2.shape() == std::vector<int>{2, 1}));
+        auto rv2 = read(r2);
+        assert(close(rv2[0], 6.f) && close(rv2[1], 15.f));
+
+        auto r3 = sum_to(a, {});                 // 全部坍缩到 0 维
+        assert(r3.shape().empty());
+        float sv = 0; r3.copy_to(&sv);
+        assert(close(sv, 21.f));
+
+        // batched 左侧维坍缩: [4,2,3] -> [2,3]，4 个 [2,3] 块逐元素相加
+        Tensor b({4, 2, 3}, DataType::FP32, DeviceType::CPU);
+        std::vector<float> bv(24);
+        for (int i = 0; i < 24; ++i) bv[i] = static_cast<float>(i + 1);
+        b.copy_from(bv.data());
+        auto r4 = sum_to(b, {2, 3});
+        auto rv4 = read(r4);
+        float e4[] = {40, 44, 48, 52, 56, 60};   // (i+1)+(i+7)+(i+13)+(i+19)
+        for (int i = 0; i < 6; ++i) assert(close(rv4[i], e4[i]));
+
+        // 视图输入: a.T=[3,2] 沿行坍缩到 [2] => {1+2+3, 4+5+6}
+        auto rv5 = read(sum_to(a.transpose(), {2}));
+        assert(close(rv5[0], 6.f) && close(rv5[1], 15.f));
+    }
 
     std::puts("test_ops: all cases passed");
     return 0;
