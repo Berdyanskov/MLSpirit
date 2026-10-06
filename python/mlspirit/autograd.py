@@ -51,23 +51,54 @@ class Variable:
         self.creator = func
 
     def backward(self):
-        """循环版反向传播"""
+        """依赖计数 + ReadyQueue 版反向遍历（参考 PyTorch GraphTask::dependencies_）。
+
+        两个结构性条件：
+          1) 函数只在其输出梯度收齐后执行一次——"就绪"靠计数编码，不靠遍历顺序；
+          2) 同一变量被 k 条支路使用时，梯度逐支累加。
+        dependencies 的生命周期是本次 backward 任务（即 GraphTask），挂在任务局部
+        而非节点属性上：同一张图多次/并发 backward 互不污染。
+        """
         if self.grad is None:
-            self.grad = _ones_like(self.data)
-        funcs = [self.creator]
-        while funcs:
-            f = funcs.pop()
-            gy = f.output.grad
-            gxs = f.backward(gy)
+            self.grad = _ones_like(self.data) # 这里对应的是当前变量即计算图终点，也即当前为损失函数输出的情况，自身对自身的梯度为全1张量。
+        if self.creator is None:
+            return
+
+        # 任务初始化：沿 creator/inputs 踩一遍可达子图，统计每个函数节点
+        # 还差几条"消费边"未投递（同一变量在 inputs 里出现 k 次计 k 条边）
+        dependencies = {}   # Function -> 待投递边数（命名与归属参考 PyTorch GraphTask::dependencies_）
+        visited = set()
+        stack = [self.creator]
+        while stack:
+            f = stack.pop()
+            if f in visited:
+                continue
+            visited.add(f)
+            for x in f.inputs:
+                p = x.creator
+                if p is not None:
+                    dependencies[p] = dependencies.get(p, 0) + 1
+                    stack.append(p)
+
+        # ReadyQueue：计数归零即就绪（根的 creator 无人消费它，天然就绪）
+        ready = [self.creator]
+        while ready:
+            f = ready.pop()
+            gxs = f.backward(f.output.grad)     # f.output.grad 此时必然已收齐
             if not isinstance(gxs, tuple):
                 gxs = (gxs,)
             for x, gx in zip(f.inputs, gxs):
-                if gx is None:
+                # InputBuffer 语义：梯度在变量侧逐支累加（多支路求和）
+                if gx is not None:
+                    x.grad = gx if x.grad is None else mls.add(x.grad, gx)
+                p = x.creator
+                if p is None:
                     continue
-                # 梯度累加：一个变量被多条支路使用时，梯度是各支路之和
-                x.grad = gx if x.grad is None else mls.add(x.grad, gx)
-                if x.creator is not None:
-                    funcs.append(x.creator)
+                # 递减与梯度内容无关：投递行为发生了（哪怕投的是 None），
+                # 这条边就算消费完毕——否则计数永不归零，上游会被静默饿死
+                dependencies[p] -= 1
+                if dependencies[p] == 0:        # 全部消费者投递完毕 → 梯度收齐，就绪
+                    ready.append(p)
 
 
 class Function:

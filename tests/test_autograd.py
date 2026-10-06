@@ -110,5 +110,16 @@ ag.sum_all(ag.square(ag.matmul(x, w))).backward()
 num_bmm = numerical_grad(chain_bmm, x3_np)
 report("bcast matmul chain (num)", close(x.grad, num_bmm, rtol=1e-2, atol=1e-2))
 
+# 10) 菱形图（反向遍历顺序回归）：y = square(x); loss = square(y) + y
+#     loss = x⁴ + x²，d/dx = 4x³ + 2x；x = 2 → 36。
+#     y 被 square 与 add 两条支路消费；旧的"栈里弹出谁就处理谁"实现会在
+#     y.grad 未收齐时提前消费 y 的 creator（实测得 4 ≠ 36）。依赖计数 +
+#     ReadyQueue 保证 y 的 creator 在两支都投递完毕后才会执行。
+x = ag.variable(np.array([2.0], dtype=np.float32))
+y = ag.square(x)
+ag.add(ag.square(y), y).backward()
+report("diamond graph grad x", close(x.grad, np.array([36.0], dtype=np.float32)))
+report("diamond graph grad y", close(y.grad, np.array([9.0], dtype=np.float32)))  # 2y + 1
+
 print("ALL PASS" if fails == 0 else f"{fails} FAILURES")
 raise SystemExit(0 if fails == 0 else 1)
