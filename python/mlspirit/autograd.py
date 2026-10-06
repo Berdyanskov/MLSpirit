@@ -51,7 +51,7 @@ class Variable:
         self.creator = func
 
     def backward(self):
-        """循环版反向传播（避免递归爆栈，与 minitorch 第 1 课相同的取舍）。"""
+        """循环版反向传播"""
         if self.grad is None:
             self.grad = _ones_like(self.data)
         funcs = [self.creator]
